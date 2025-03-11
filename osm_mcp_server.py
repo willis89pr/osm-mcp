@@ -1,11 +1,10 @@
 import json
-import logging
 import os
 import re
 import sys
-from contextlib import asynccontextmanager
+import time
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
 import psycopg2.extras
@@ -26,12 +25,18 @@ class PostgresConnection:
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Execute a query and return results as a list of dictionaries with total count."""
         mylog(f"Executing query: {query}, params: {params}")
+        start_time = time.time()
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
+                # Set statement timeout to 5 seconds
+                cur.execute("SET statement_timeout = 5000")
+
                 if params:
                     cur.execute(query, params)
                 else:
                     cur.execute(query)
+                end_time = time.time()
+                mylog(f"Query execution time: {end_time - start_time} seconds")
                 total_rows = cur.rowcount
                 results = cur.fetchmany(max_rows)
                 mylog(f"Got {total_rows} rows")
@@ -39,6 +44,9 @@ class PostgresConnection:
                 for row in results[:3]:
                     mylog(f"Row: {row}")
                 return results, total_rows
+            except psycopg2.errors.QueryCanceled:
+                self.conn.rollback()
+                raise TimeoutError("Query execution timed out")
             except Exception as e:
                 self.conn.rollback()
                 raise e
@@ -112,8 +120,8 @@ pg_params = {
     "user": os.environ.get("PGUSER", "wiseman"),
     "host": os.environ.get("PGHOST", "localhost"),
     "port": os.environ.get("PGPORT", "5432"),
+    "password": os.environ.get("PGPASSWORD", None),
 }
-pg_params["password"] = 'CTX^monitor'
 # print(f"Connecting to PostgreSQL database: {pg_params}")
 pg_conn = psycopg2.connect(**pg_params)
 db = PostgresConnection(pg_conn)
@@ -152,15 +160,370 @@ The 'way' column contains the geometry in SRID 4326 (WGS84) format.
 @mcp.tool()
 async def query_osm_postgres(query: str, ctx: Context) -> str:
     """
-    Execute SQL query against the OSM PostgreSQL database
+        Execute SQL query against the OSM PostgreSQL database. This database
+        contains the complete OSM data in a postgres database, and is an excellent
+        way to analyze or query geospatial/geographic data.
 
-    Args:
-        query: SQL query to execute
-        max_rows: Maximum number of rows to return (default: 1000)
-        enforce_read_only: Whether to enforce read-only queries (default: True)
+        Args:
+            query: SQL query to execute
 
-    Returns:
-        Query results as formatted text
+        Returns:
+            Query results as formatted text
+
+    Example query: Find points of interest near a location
+    ```sql
+    SELECT osm_id, name, amenity, tourism, shop, tags
+    FROM planet_osm_point
+    WHERE (amenity IS NOT NULL OR tourism IS NOT NULL OR shop IS NOT NULL)
+      AND ST_DWithin(
+          geography(way),
+          geography(ST_SetSRID(ST_MakePoint(-73.99, 40.71), 4326)),
+          1000  -- 1000 meters
+      );
+    ```
+
+    The database is in postgres using the postgis extension. It was
+    created by the osm2pgsql tool. This database is a complete dump of the
+    OSM data.
+
+    In OpenStreetMap (OSM), data is structured using nodes (points), ways
+    (lines/polygons), and relations. Nodes represent individual points
+    with coordinates, while ways are ordered lists of nodes forming lines
+    or closed shapes (polygons).
+
+    Remember that name alone is not sufficient to disambiguate a
+    feature. For any name you can think of, there are dozens of features
+    around the world with that name, probably even of the same type
+    (e.g. lots of cities named "Los Angeles"). If you know the general
+    location, you can use a bounding box to disambiguate.
+
+    Always try to get and refer to OSM IDs when possible because they are
+    unique and are the absolute fastest way to refer again to a
+    feature. Users don't usually care what they are but they can help you
+    speed up subsequent queries.
+
+    Speaking of speed, there's a TON of data, so queries that don't use
+    indexes will be too slow. It's usually best to use postgres and
+    postgis functions, and advanced sql when possible. If you need to
+    explore the data to get a sense of tags, etc., make sure to limit the
+    number of rows you get back to a small number or use aggregation
+    functions. Every query will either need to be filtered with WHERE
+    clauses or be an aggregation query.
+
+    IMPORTANT: All the spatial indexes are on the geography type, not the
+    geometry type. This means if you do a spatial query, you need to use
+    the geography function. For example:
+
+    ```
+    SELECT
+        b.osm_id AS building_id,
+        b.name AS building_name,
+        ST_AsText(b.way) AS building_geometry
+    FROM
+        planet_osm_polygon b
+    JOIN
+        planet_osm_polygon burbank ON burbank.osm_id = -3529574
+    JOIN
+        planet_osm_polygon glendale ON glendale.osm_id = -2313082
+    WHERE
+        ST_Intersects(b.way::geography, burbank.way::geography) AND
+        ST_Intersects(b.way::geography, glendale.way::geography) AND
+        b.building IS NOT NULL;
+    ```
+
+    Here's a more detailed explanation of the data representation:
+
+    • Nodes: [1, 2, 3]
+            • Represent individual points on the map with latitude and
+              longitude coordinates. [1, 2, 3]
+            • Can be used to represent point features like shops, lamp
+              posts, etc. [1]
+            • Collections of nodes are also used to define the shape of
+              ways. [1]
+
+    • Ways: [1, 2]
+            • Represent collections of nodes. [1, 2]
+            • Do not store their own coordinates; instead, they store an ordered
+              list of node identifiers. [1, 2]
+
+            • Ways can be open (lines) or closed (polygons). [2, 5]
+
+            • Used to represent various features like roads, railways, river
+              centerlines, powerlines, and administrative borders. [1]
+
+    • Relations: [4]
+            • Are groups of nodes and/or ways, used to represent complex features
+              like routes, areas, or relationships between map elements. [4]
+
+    [1] https://algo.win.tue.nl/tutorials/openstreetmap/
+    [2] https://docs.geodesk.com/intro-to-osm
+    [3] https://wiki.openstreetmap.org/wiki/Elements
+    [4] https://racum.blog/articles/osm-to-geojson/
+    [5] https://wiki.openstreetmap.org/wiki/Way
+
+    Tags are key-value pairs that describe the features in the map. They
+    are used to store information about the features, such as their name,
+    type, or other properties. Note that in the following tables, some
+    tags have their own columns, but all other tags are stored in the tags
+    column as a hstore type.
+
+    List of tables:
+    | Name               |
+    |--------------------|
+    | planet_osm_line    |
+    | planet_osm_point   |
+    | planet_osm_polygon |
+    | planet_osm_rels    |
+    | planet_osm_roads   |
+    | planet_osm_ways    |
+    | spatial_ref_sys    |
+
+    Table "public.planet_osm_line":
+    | Column             | Type                      |
+    |--------------------+---------------------------|
+    | osm_id             | bigint                    |
+    | access             | text                      |
+    | addr:housename     | text                      |
+    | addr:housenumber   | text                      |
+    | addr:interpolation | text                      |
+    | admin_level        | text                      |
+    | aerialway          | text                      |
+    | aeroway            | text                      |
+    | amenity            | text                      |
+    | area               | text                      |
+    | barrier            | text                      |
+    | bicycle            | text                      |
+    | brand              | text                      |
+    | bridge             | text                      |
+    | boundary           | text                      |
+    | building           | text                      |
+    | construction       | text                      |
+    | covered            | text                      |
+    | culvert            | text                      |
+    | cutting            | text                      |
+    | denomination       | text                      |
+    | disused            | text                      |
+    | embankment         | text                      |
+    | foot               | text                      |
+    | generator:source   | text                      |
+    | harbour            | text                      |
+    | highway            | text                      |
+    | historic           | text                      |
+    | horse              | text                      |
+    | intermittent       | text                      |
+    | junction           | text                      |
+    | landuse            | text                      |
+    | layer              | text                      |
+    | leisure            | text                      |
+    | lock               | text                      |
+    | man_made           | text                      |
+    | military           | text                      |
+    | motorcar           | text                      |
+    | name               | text                      |
+    | natural            | text                      |
+    | office             | text                      |
+    | oneway             | text                      |
+    | operator           | text                      |
+    | place              | text                      |
+    | population         | text                      |
+    | power              | text                      |
+    | power_source       | text                      |
+    | public_transport   | text                      |
+    | railway            | text                      |
+    | ref                | text                      |
+    | religion           | text                      |
+    | route              | text                      |
+    | service            | text                      |
+    | shop               | text                      |
+    | sport              | text                      |
+    | surface            | text                      |
+    | toll               | text                      |
+    | tourism            | text                      |
+    | tower:type         | text                      |
+    | tracktype          | text                      |
+    | tunnel             | text                      |
+    | water              | text                      |
+    | waterway           | text                      |
+    | wetland            | text                      |
+    | width              | text                      |
+    | wood               | text                      |
+    | z_order            | integer                   |
+    | way_area           | real                      |
+    | tags               | hstore                    |
+    | way                | geometry(LineString,4326) |
+    Indexes:
+        "planet_osm_line_osm_id_idx" btree (osm_id)
+        "planet_osm_line_tags_idx" gin (tags)
+        "planet_osm_line_way_geog_idx" gist (geography(way))
+
+    Table "public.planet_osm_point":
+    | Column             | Type                 |
+    |--------------------+----------------------|
+    | osm_id             | bigint               |
+    | access             | text                 |
+    | addr:housename     | text                 |
+    | addr:housenumber   | text                 |
+    | addr:interpolation | text                 |
+    | admin_level        | text                 |
+    | aerialway          | text                 |
+    | aeroway            | text                 |
+    | amenity            | text                 |
+    | area               | text                 |
+    | barrier            | text                 |
+    | bicycle            | text                 |
+    | brand              | text                 |
+    | bridge             | text                 |
+    | boundary           | text                 |
+    | building           | text                 |
+    | capital            | text                 |
+    | construction       | text                 |
+    | covered            | text                 |
+    | culvert            | text                 |
+    | cutting            | text                 |
+    | denomination       | text                 |
+    | disused            | text                 |
+    | ele                | text                 |
+    | embankment         | text                 |
+    | foot               | text                 |
+    | generator:source   | text                 |
+    | harbour            | text                 |
+    | highway            | text                 |
+    | historic           | text                 |
+    | horse              | text                 |
+    | intermittent       | text                 |
+    | junction           | text                 |
+    | landuse            | text                 |
+    | layer              | text                 |
+    | leisure            | text                 |
+    | lock               | text                 |
+    | man_made           | text                 |
+    | military           | text                 |
+    | motorcar           | text                 |
+    | name               | text                 |
+    | natural            | text                 |
+    | office             | text                 |
+    | oneway             | text                 |
+    | operator           | text                 |
+    | place              | text                 |
+    | population         | text                 |
+    | power              | text                 |
+    | power_source       | text                 |
+    | public_transport   | text                 |
+    | railway            | text                 |
+    | ref                | text                 |
+    | religion           | text                 |
+    | route              | text                 |
+    | service            | text                 |
+    | shop               | text                 |
+    | sport              | text                 |
+    | surface            | text                 |
+    | toll               | text                 |
+    | tourism            | text                 |
+    | tower:type         | text                 |
+    | tunnel             | text                 |
+    | water              | text                 |
+    | waterway           | text                 |
+    | wetland            | text                 |
+    | width              | text                 |
+    | wood               | text                 |
+    | z_order            | integer              |
+    | tags               | hstore               |
+    | way                | geometry(Point,4326) |
+    Indexes:
+        "planet_osm_point_osm_id_idx" btree (osm_id)
+        "planet_osm_point_tags_idx" gin (tags)
+        "planet_osm_point_way_geog_idx" gist (geography(way))
+
+    Table "public.planet_osm_polygon":
+    | Column             | Type                    |
+    |--------------------+-------------------------|
+    | osm_id             | bigint                  |
+    | access             | text                    |
+    | addr:housename     | text                    |
+    | addr:housenumber   | text                    |
+    | addr:interpolation | text                    |
+    | admin_level        | text                    |
+    | aerialway          | text                    |
+    | aeroway            | text                    |
+    | amenity            | text                    |
+    | area               | text                    |
+    | barrier            | text                    |
+    | bicycle            | text                    |
+    | brand              | text                    |
+    | bridge             | text                    |
+    | boundary           | text                    |
+    | building           | text                    |
+    | construction       | text                    |
+    | covered            | text                    |
+    | culvert            | text                    |
+    | cutting            | text                    |
+    | denomination       | text                    |
+    | disused            | text                    |
+    | embankment         | text                    |
+    | foot               | text                    |
+    | generator:source   | text                    |
+    | harbour            | text                    |
+    | highway            | text                    |
+    | historic           | text                    |
+    | horse              | text                    |
+    | intermittent       | text                    |
+    | junction           | text                    |
+    | landuse            | text                    |
+    | layer              | text                    |
+    | leisure            | text                    |
+    | lock               | text                    |
+    | man_made           | text                    |
+    | military           | text                    |
+    | motorcar           | text                    |
+    | name               | text                    |
+    | natural            | text                    |
+    | office             | text                    |
+    | oneway             | text                    |
+    | operator           | text                    |
+    | place              | text                    |
+    | population         | text                    |
+    | power              | text                    |
+    | power_source       | text                    |
+    | public_transport   | text                    |
+    | railway            | text                    |
+    | ref                | text                    |
+    | religion           | text                    |
+    | route              | text                    |
+    | service            | text                    |
+    | shop               | text                    |
+    | sport              | text                    |
+    | surface            | text                    |
+    | toll               | text                    |
+    | tourism            | text                    |
+    | tower:type         | text                    |
+    | tracktype          | text                    |
+    | tunnel             | text                    |
+    | water              | text                    |
+    | waterway           | text                    |
+    | wetland            | text                    |
+    | width              | text                    |
+    | wood               | text                    |
+    | z_order            | integer                 |
+    | way_area           | real                    |
+    | tags               | hstore                  |
+    | way                | geometry(Geometry,4326) |
+    Indexes:
+        "planet_osm_polygon_osm_id_idx" btree (osm_id)
+        "planet_osm_polygon_tags_idx" gin (tags)
+        "planet_osm_polygon_way_geog_idx" gist (geography(way))
+
+    Table "public.planet_osm_rels":
+    | Column  | Type     |
+    |---------+----------|
+    | id      | bigint   |
+    | way_off | smallint |
+    | rel_off | smallint |
+    | parts   | bigint[] |
+    | members | text[]   |
+    | tags    | text[]   |
+    Indexes:
+        "planet_osm_rels_pkey" PRIMARY KEY, btree (id)
+        "planet_osm_rels_parts_idx" gin (parts) WITH (fastupdate=off)
     """
     enforce_read_only = True
     max_rows = 100
@@ -188,109 +551,65 @@ async def query_osm_postgres(query: str, ctx: Context) -> str:
 
 
 # Tool to find features by name
-@mcp.tool()
-async def find_features_by_name(
-    name_pattern: str, feature_types: List[str], ctx: Context
-) -> str:
-    """
-    Find OSM features by name pattern
+# @mcp.tool()
+# async def find_features_by_name(
+#     name: str, feature_types: List[str], ctx: Context
+# ) -> str:
+#     """
+#     Find OSM features by name.
 
-    Args:
-        name_pattern: Name pattern to search for (SQL LIKE pattern)
-        feature_types: Types of features to search (point, line, polygon)
+#     Args:
+#         name: Name of the feauture (must be an exact match)
+#         feature_types: Types of features to search (point, line, polygon)
 
-    Returns:
-        Features matching the name pattern
-    """
-    max_results = 50
-    valid_types = ["point", "line", "polygon"]
-    feature_types = [ft for ft in feature_types if ft in valid_types]
+#     Returns:
+#         Features matching the name pattern
+#     """
+#     results = []
+#     max_results = 50
+#     try:
+#         for feature_type in feature_types:
+#             query = find_features_by_name_sql(name, feature_type)
+#             query_results, _ = await db.execute_query(
+#                 query, dict(name=name, limit=max_results)
+#             )
+#             for row in query_results:
+#                 row["geometry_type"] = feature_type
+#                 results.append(row)
+#                 if len(results) >= max_results:
+#                     break
+#             if len(results) >= max_results:
+#                 break
+#         if not results:
+#             return f"No features found with name: {name}"
+#         return json.dumps(results, indent=2, default=str)
+#     except Exception as e:
+#         # Print the full traceback
+#         import traceback
 
-    if not feature_types:
-        return "Error: No valid feature types specified. Choose from: point, line, polygon."
-
-    results = []
-
-    try:
-        for feature_type in feature_types:
-            table_name = f"planet_osm_{feature_type}"
-
-            query = f"""
-            SELECT osm_id, name, ST_AsText(ST_Centroid(way)) AS centroid,
-                   CASE 
-                     WHEN highway IS NOT NULL THEN 'highway: ' || highway
-                     WHEN amenity IS NOT NULL THEN 'amenity: ' || amenity
-                     WHEN building IS NOT NULL THEN 'building: ' || building
-                     WHEN natural IS NOT NULL THEN 'natural: ' || "natural"
-                     WHEN waterway IS NOT NULL THEN 'waterway: ' || waterway
-                     WHEN landuse IS NOT NULL THEN 'landuse: ' || landuse
-                     ELSE 'other'
-                   END AS feature_type
-            FROM {table_name}
-            WHERE name ILIKE %s
-            LIMIT %s
-            """
-
-            query_results, _ = await db.execute_query(
-                query, {"s": f"%{name_pattern}%", "l": max_results}
-            )
-
-            for row in query_results:
-                row["geometry_type"] = feature_type
-                results.append(row)
-
-                if len(results) >= max_results:
-                    break
-
-            if len(results) >= max_results:
-                break
-
-        if not results:
-            return f"No features found with name pattern: {name_pattern}"
-
-        return json.dumps(results, indent=2, default=str)
-    except Exception as e:
-        # Print the full traceback
-        import traceback
-        traceback.print_exc()
-        return f"Error finding features: {str(e)}"
+#         traceback.print_exc()
+#         return f"Error finding features: {str(e)}"
 
 
-def find_features_by_name_sql(name_pattern: str, feature_types: List[str]) -> str:
+def find_features_by_name_sql(name: str, feature_type: str) -> str:
     # Generate the SQL used by the find_features_by_name tool.
     table_name = f"planet_osm_{feature_type}"
     query = f"""
-    SELECT osm_id, name, ST_AsText(ST_Centroid(way)) AS centroid,
-            CASE 
-                WHEN highway IS NOT NULL THEN 'highway: ' || highway
-                WHEN amenity IS NOT NULL THEN 'amenity: ' || amenity
-                WHEN building IS NOT NULL THEN 'building: ' || building
-                WHEN natural IS NOT NULL THEN 'natural: ' || "natural"
-                WHEN waterway IS NOT NULL THEN 'waterway: ' || waterway
-                WHEN landuse IS NOT NULL THEN 'landuse: ' || landuse
-                ELSE 'other'
-            END AS feature_type
+    SELECT osm_id, name, ST_AsText(ST_Centroid(way)) AS centroid
     FROM {table_name}
-    WHERE name ILIKE %s
-    LIMIT %s
+    WHERE name = %(name)s
+    LIMIT %(limit)s
     """
     return query
 
-"""
-{
-  `longitude`: -116.9763,
-  `latitude`: 34.9435,
-  `radius_meters`: 8047,
-  `feature_types`: [
-    `point`
-  ],
-  `feature_filters`: {
-    `amenity`: `restaurant`
-  }
-}
-"""
 
-def find_features_near_location_sql(longitude: float, latitude: float, radius_meters: float, feature_type: str, feature_filters: Dict[str, str]) -> str:
+def find_features_near_location_sql(
+    longitude: float,
+    latitude: float,
+    radius_meters: float,
+    feature_type: str,
+    feature_filters: Dict[str, str],
+) -> str:
     # Generate the SQL used by the find_features_near_location tool.
     if not -180 <= longitude <= 180:
         raise ValueError("Longitude must be between -180 and 180")
@@ -311,16 +630,7 @@ def find_features_near_location_sql(longitude: float, latitude: float, radius_me
             filters.append(f"{key} = '{value}'")
     filter_clause = " AND ".join(filters) if filters else "TRUE"
     query = f"""
-    SELECT osm_id, name, ST_AsText(ST_Centroid(way)) AS centroid,
-           CASE
-             WHEN highway IS NOT NULL THEN 'highway: ' || highway
-             WHEN amenity IS NOT NULL THEN 'amenity: ' || amenity
-             WHEN building IS NOT NULL THEN 'building: ' || building
-             WHEN natural IS NOT NULL THEN 'natural: ' || "natural"
-             WHEN waterway IS NOT NULL THEN 'waterway: ' || waterway
-             WHEN landuse IS NOT NULL THEN 'landuse: ' || landuse
-             ELSE 'other'
-           END AS feature_type
+    SELECT osm_id, name, ST_AsText(ST_Centroid(way)) AS centroid
     FROM {table_name}
     WHERE ST_DWithin(
         geography(way),
@@ -332,63 +642,69 @@ def find_features_near_location_sql(longitude: float, latitude: float, radius_me
     """
     return query
 
+
 # Tool to find features near a location
-@mcp.tool()
-async def find_features_near_location(
-    longitude: float,
-    latitude: float,
-    radius_meters: float,
-    feature_types: List[str],
-    feature_filters: Dict[str, str],
-    ctx: Context,
-) -> str:
-    """
-    Find OSM features near a specific location
+# @mcp.tool()
+# async def find_features_near_location(
+#     longitude: float,
+#     latitude: float,
+#     radius_meters: float,
+#     feature_types: List[str],
+#     feature_filters: Dict[str, str],
+#     ctx: Context,
+# ) -> str:
+#     """
+#     Find OSM features near a specific location
 
-    Args:
-        longitude: Longitude in WGS84 (between -180 and 180)
-        latitude: Latitude in WGS84 (between -90 and 90)
-        radius_meters: Search radius in meters
-        feature_types: Types of features to search (point, line, polygon)
-        feature_filters: Filters to apply (e.g. {"amenity": "restaurant"})
+#     Args:
+#         longitude: Longitude in WGS84 (between -180 and 180)
+#         latitude: Latitude in WGS84 (between -90 and 90)
+#         radius_meters: Search radius in meters
+#         feature_types: Types of features to search (point, line, polygon)
+#         feature_filters: Filters to apply (e.g. {"amenity": "restaurant"})
 
-    Returns:
-        Features found near the specified location
-    """
-    max_results = 50
-    results = []
-    try:
-        for feature_type in feature_types:
-            query = find_features_near_location_sql(longitude, latitude, radius_meters, feature_type, feature_filters)
-            query_params = {
-                "lon1": longitude,
-                "lat1": latitude,
-                "lon2": longitude,
-                "lat2": latitude,
-                "radius": radius_meters,
-                "limit": max_results,
-            }
-            query_results, _ = await db.execute_query(query, query_params)
-            for row in query_results:
-                row["geometry_type"] = feature_type
-                results.append(row)
-                if len(results) >= max_results:
-                    break
-            if len(results) >= max_results:
-                break
-        if not results:
-            filter_str = (
-                ", ".join([f"{k}={v}" for k, v in feature_filters.items()])
-                if feature_filters
-                else "none"
-            )
-            return f"No features found within {radius_meters}m of ({longitude}, {latitude}) with filters: {filter_str}"
-        # Sort by distance
-        results.sort(key=lambda x: x["distance_meters"])
+#     Returns:
+#         Features found near the specified location
+#     """
+#     max_results = 50
+#     results = []
+#     try:
+#         for feature_type in feature_types:
+#             query = find_features_near_location_sql(
+#                 longitude, latitude, radius_meters, feature_type, feature_filters
+#             )
+#             query_params = {
+#                 "lon1": longitude,
+#                 "lat1": latitude,
+#                 "lon2": longitude,
+#                 "lat2": latitude,
+#                 "radius": radius_meters,
+#                 "limit": max_results,
+#             }
+#             query_results, _ = await db.execute_query(query, query_params)
+#             for row in query_results:
+#                 row["geometry_type"] = feature_type
+#                 results.append(row)
+#                 if len(results) >= max_results:
+#                     break
+#             if len(results) >= max_results:
+#                 break
+#         if not results:
+#             filter_str = (
+#                 ", ".join([f"{k}={v}" for k, v in feature_filters.items()])
+#                 if feature_filters
+#                 else "none"
+#             )
+#             return f"No features found within {radius_meters}m of ({longitude}, {latitude}) with filters: {filter_str}"
+#         # Sort by distance
+#         results.sort(key=lambda x: x["distance_meters"])
 
-        return json.dumps(results[:max_results], indent=2, default=str)
-    except Exception as e:
-        return f"Error finding features: {str(e)}"
+#         return json.dumps(results[:max_results], indent=2, default=str)
+#     except Exception as e:
+#         import traceback
+
+#         traceback.print_exc()
+#         return f"Error finding features: {str(e)}"
 
 
 # Resource for database schema information
