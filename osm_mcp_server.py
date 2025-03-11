@@ -11,7 +11,7 @@ import psycopg2.extras
 from mcp.server.fastmcp import Context, FastMCP
 
 
-def mylog(msg):
+def log(msg):
     print(msg, file=sys.stderr)
 
 
@@ -24,7 +24,7 @@ class PostgresConnection:
         self, query: str, params: Optional[Dict[str, Any]] = None, max_rows: int = 1000
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Execute a query and return results as a list of dictionaries with total count."""
-        mylog(f"Executing query: {query}, params: {params}")
+        log(f"Executing query: {query}, params: {params}")
         start_time = time.time()
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
@@ -36,13 +36,13 @@ class PostgresConnection:
                 else:
                     cur.execute(query)
                 end_time = time.time()
-                mylog(f"Query execution time: {end_time - start_time} seconds")
+                log(f"Query execution time: {end_time - start_time} seconds")
                 total_rows = cur.rowcount
                 results = cur.fetchmany(max_rows)
-                mylog(f"Got {total_rows} rows")
+                log(f"Got {total_rows} rows")
                 # Log first 3 rows.
                 for row in results[:3]:
-                    mylog(f"Row: {row}")
+                    log(f"Row: {row}")
                 return results, total_rows
             except psycopg2.errors.QueryCanceled:
                 self.conn.rollback()
@@ -550,47 +550,6 @@ async def query_osm_postgres(query: str, ctx: Context) -> str:
         return f"Error executing query: {str(e)}"
 
 
-# Tool to find features by name
-# @mcp.tool()
-# async def find_features_by_name(
-#     name: str, feature_types: List[str], ctx: Context
-# ) -> str:
-#     """
-#     Find OSM features by name.
-
-#     Args:
-#         name: Name of the feauture (must be an exact match)
-#         feature_types: Types of features to search (point, line, polygon)
-
-#     Returns:
-#         Features matching the name pattern
-#     """
-#     results = []
-#     max_results = 50
-#     try:
-#         for feature_type in feature_types:
-#             query = find_features_by_name_sql(name, feature_type)
-#             query_results, _ = await db.execute_query(
-#                 query, dict(name=name, limit=max_results)
-#             )
-#             for row in query_results:
-#                 row["geometry_type"] = feature_type
-#                 results.append(row)
-#                 if len(results) >= max_results:
-#                     break
-#             if len(results) >= max_results:
-#                 break
-#         if not results:
-#             return f"No features found with name: {name}"
-#         return json.dumps(results, indent=2, default=str)
-#     except Exception as e:
-#         # Print the full traceback
-#         import traceback
-
-#         traceback.print_exc()
-#         return f"Error finding features: {str(e)}"
-
-
 def find_features_by_name_sql(name: str, feature_type: str) -> str:
     # Generate the SQL used by the find_features_by_name tool.
     table_name = f"planet_osm_{feature_type}"
@@ -641,70 +600,6 @@ def find_features_near_location_sql(
     LIMIT %s
     """
     return query
-
-
-# Tool to find features near a location
-# @mcp.tool()
-# async def find_features_near_location(
-#     longitude: float,
-#     latitude: float,
-#     radius_meters: float,
-#     feature_types: List[str],
-#     feature_filters: Dict[str, str],
-#     ctx: Context,
-# ) -> str:
-#     """
-#     Find OSM features near a specific location
-
-#     Args:
-#         longitude: Longitude in WGS84 (between -180 and 180)
-#         latitude: Latitude in WGS84 (between -90 and 90)
-#         radius_meters: Search radius in meters
-#         feature_types: Types of features to search (point, line, polygon)
-#         feature_filters: Filters to apply (e.g. {"amenity": "restaurant"})
-
-#     Returns:
-#         Features found near the specified location
-#     """
-#     max_results = 50
-#     results = []
-#     try:
-#         for feature_type in feature_types:
-#             query = find_features_near_location_sql(
-#                 longitude, latitude, radius_meters, feature_type, feature_filters
-#             )
-#             query_params = {
-#                 "lon1": longitude,
-#                 "lat1": latitude,
-#                 "lon2": longitude,
-#                 "lat2": latitude,
-#                 "radius": radius_meters,
-#                 "limit": max_results,
-#             }
-#             query_results, _ = await db.execute_query(query, query_params)
-#             for row in query_results:
-#                 row["geometry_type"] = feature_type
-#                 results.append(row)
-#                 if len(results) >= max_results:
-#                     break
-#             if len(results) >= max_results:
-#                 break
-#         if not results:
-#             filter_str = (
-#                 ", ".join([f"{k}={v}" for k, v in feature_filters.items()])
-#                 if feature_filters
-#                 else "none"
-#             )
-#             return f"No features found within {radius_meters}m of ({longitude}, {latitude}) with filters: {filter_str}"
-#         # Sort by distance
-#         results.sort(key=lambda x: x["distance_meters"])
-
-#         return json.dumps(results[:max_results], indent=2, default=str)
-#     except Exception as e:
-#         import traceback
-
-#         traceback.print_exc()
-#         return f"Error finding features: {str(e)}"
 
 
 # Resource for database schema information
