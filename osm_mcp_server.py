@@ -4,11 +4,14 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, AsyncIterator
+from contextlib import asynccontextmanager
 
 import psycopg2
 import psycopg2.extras
 from mcp.server.fastmcp import Context, FastMCP
+
+from flask_server import FlaskServer
 
 
 def log(msg):
@@ -101,451 +104,141 @@ class PostgresConnection:
         }
 
 
-# SQL validation function
+# Initialize the MCP server
+mcp = FastMCP("OSM MCP Server", dependencies=["psycopg2>=2.9.10", "flask>=3.1.0"])
+
+@dataclass
+class AppContext:
+    db_conn: Optional[PostgresConnection] = None
+    flask_server: Optional[FlaskServer] = None
+
+@asynccontextmanager
+async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+    """Manage application lifecycle with type-safe context"""
+    app_ctx = AppContext()
+    try:
+        # Initialize database connection (optional)
+        try:
+            log("Connecting to database...")
+            conn = psycopg2.connect(
+                host=os.environ.get("POSTGRES_HOST", "localhost"),
+                port=os.environ.get("POSTGRES_PORT", "5432"),
+                dbname=os.environ.get("POSTGRES_DB", "osm"),
+                user=os.environ.get("POSTGRES_USER", "postgres"),
+                password=os.environ.get("POSTGRES_PASSWORD", "postgres"),
+            )
+            app_ctx.db_conn = PostgresConnection(conn)
+            log("Database connection established")
+        except Exception as e:
+            log(f"Warning: Could not connect to database: {e}")
+            log("Continuing without database connection")
+        
+        # Initialize and start Flask server
+        log("Starting Flask server...")
+        flask_server = FlaskServer(
+            host=os.environ.get("FLASK_HOST", "127.0.0.1"),
+            port=int(os.environ.get("FLASK_PORT", "5000"))
+        )
+        flask_server.start()
+        app_ctx.flask_server = flask_server
+        log(f"Flask server started at http://{flask_server.host}:{flask_server.port}")
+        
+        yield app_ctx
+    finally:
+        # Cleanup on shutdown
+        if app_ctx.flask_server:
+            log("Stopping Flask server...")
+            app_ctx.flask_server.stop()
+        
+        if app_ctx.db_conn and app_ctx.db_conn.conn:
+            log("Closing database connection...")
+            app_ctx.db_conn.conn.close()
+
+# Set the lifespan manager for the MCP server
+mcp = FastMCP("OSM MCP Server", 
+              dependencies=["psycopg2>=2.9.10", "flask>=3.1.0"],
+              lifespan=app_lifespan)
+
 def is_read_only_query(query: str) -> bool:
-    """Check if a query is read-only (SELECT, EXPLAIN, etc.)."""
-    # Normalize query: remove comments and extra whitespace
-    clean_query = re.sub(r"--.*?$", "", query, flags=re.MULTILINE)
-    clean_query = re.sub(r"/\*.*?\*/", "", clean_query, flags=re.DOTALL)
-    clean_query = clean_query.strip()
-    # Check if query starts with SELECT, EXPLAIN, SHOW, etc.
-    read_ops = ["select", "explain", "show", "with"]
-    first_word = clean_query.split()[0].lower() if clean_query.split() else ""
-    return first_word in read_ops and "into" not in clean_query.lower()
+    """Check if a query is read-only."""
+    # Normalize query by removing comments and extra whitespace
+    query = re.sub(r"--.*$", "", query, flags=re.MULTILINE)
+    query = re.sub(r"/\*.*?\*/", "", query, flags=re.DOTALL)
+    query = query.strip().lower()
 
+    # Check for write operations
+    write_operations = [
+        r"^\s*insert\s+",
+        r"^\s*update\s+",
+        r"^\s*delete\s+",
+        r"^\s*drop\s+",
+        r"^\s*create\s+",
+        r"^\s*alter\s+",
+        r"^\s*truncate\s+",
+        r"^\s*grant\s+",
+        r"^\s*revoke\s+",
+        r"^\s*set\s+",
+    ]
 
-# Get connection parameters from environment variables
-pg_params = {
-    "dbname": os.environ.get("PGDATABASE", "osm"),
-    "user": os.environ.get("PGUSER", "wiseman"),
-    "host": os.environ.get("PGHOST", "localhost"),
-    "port": os.environ.get("PGPORT", "5432"),
-    "password": os.environ.get("PGPASSWORD", None),
-}
-# print(f"Connecting to PostgreSQL database: {pg_params}")
-pg_conn = psycopg2.connect(**pg_params)
-db = PostgresConnection(pg_conn)
+    for pattern in write_operations:
+        if re.search(pattern, query):
+            return False
 
+    return True
 
-# Create MCP server
-mcp = FastMCP("OSM PostgreSQL Server")
-
-# Describe OSM data structure
-OSM_DESCRIPTION = """
-OpenStreetMap (OSM) Data Structure:
-
-In OpenStreetMap, data is structured using:
-
-1. Nodes: Points with coordinates (shops, landmarks, etc.)
-2. Ways: Lines or polygons defined by ordered lists of nodes (roads, buildings, etc.)
-3. Relations: Groups of nodes and ways (complex features like routes)
-
-The main tables in this database are:
-- planet_osm_point: Point features
-- planet_osm_line: Linear features
-- planet_osm_polygon: Area features
-- planet_osm_rels: Relations between features
-- planet_osm_roads: Simplified road network
-- planet_osm_ways: Raw way data
-
-Each feature has 'tags' (key-value pairs) that describe its properties.
-Common tag keys are stored as individual columns (name, highway, building, etc.).
-Additional tags are stored in the 'tags' column as an hstore type.
-
-The 'way' column contains the geometry in SRID 4326 (WGS84) format.
-"""
-
-
-# Tool to execute SQL queries
+# Modify the existing tools to check for database connection
 @mcp.tool()
 async def query_osm_postgres(query: str, ctx: Context) -> str:
     """
-        Execute SQL query against the OSM PostgreSQL database. This database
-        contains the complete OSM data in a postgres database, and is an excellent
-        way to analyze or query geospatial/geographic data.
-
-        Args:
-            query: SQL query to execute
-
-        Returns:
-            Query results as formatted text
-
-    Example query: Find points of interest near a location
-    ```sql
-    SELECT osm_id, name, amenity, tourism, shop, tags
-    FROM planet_osm_point
-    WHERE (amenity IS NOT NULL OR tourism IS NOT NULL OR shop IS NOT NULL)
-      AND ST_DWithin(
-          geography(way),
-          geography(ST_SetSRID(ST_MakePoint(-73.99, 40.71), 4326)),
-          1000  -- 1000 meters
-      );
-    ```
-
-    The database is in postgres using the postgis extension. It was
-    created by the osm2pgsql tool. This database is a complete dump of the
-    OSM data.
-
-    In OpenStreetMap (OSM), data is structured using nodes (points), ways
-    (lines/polygons), and relations. Nodes represent individual points
-    with coordinates, while ways are ordered lists of nodes forming lines
-    or closed shapes (polygons).
-
-    Remember that name alone is not sufficient to disambiguate a
-    feature. For any name you can think of, there are dozens of features
-    around the world with that name, probably even of the same type
-    (e.g. lots of cities named "Los Angeles"). If you know the general
-    location, you can use a bounding box to disambiguate.
-
-    Always try to get and refer to OSM IDs when possible because they are
-    unique and are the absolute fastest way to refer again to a
-    feature. Users don't usually care what they are but they can help you
-    speed up subsequent queries.
-
-    Speaking of speed, there's a TON of data, so queries that don't use
-    indexes will be too slow. It's usually best to use postgres and
-    postgis functions, and advanced sql when possible. If you need to
-    explore the data to get a sense of tags, etc., make sure to limit the
-    number of rows you get back to a small number or use aggregation
-    functions. Every query will either need to be filtered with WHERE
-    clauses or be an aggregation query.
-
-    IMPORTANT: All the spatial indexes are on the geography type, not the
-    geometry type. This means if you do a spatial query, you need to use
-    the geography function. For example:
-
-    ```
-    SELECT
-        b.osm_id AS building_id,
-        b.name AS building_name,
-        ST_AsText(b.way) AS building_geometry
-    FROM
-        planet_osm_polygon b
-    JOIN
-        planet_osm_polygon burbank ON burbank.osm_id = -3529574
-    JOIN
-        planet_osm_polygon glendale ON glendale.osm_id = -2313082
-    WHERE
-        ST_Intersects(b.way::geography, burbank.way::geography) AND
-        ST_Intersects(b.way::geography, glendale.way::geography) AND
-        b.building IS NOT NULL;
-    ```
-
-    Here's a more detailed explanation of the data representation:
-
-    • Nodes: [1, 2, 3]
-            • Represent individual points on the map with latitude and
-              longitude coordinates. [1, 2, 3]
-            • Can be used to represent point features like shops, lamp
-              posts, etc. [1]
-            • Collections of nodes are also used to define the shape of
-              ways. [1]
-
-    • Ways: [1, 2]
-            • Represent collections of nodes. [1, 2]
-            • Do not store their own coordinates; instead, they store an ordered
-              list of node identifiers. [1, 2]
-
-            • Ways can be open (lines) or closed (polygons). [2, 5]
-
-            • Used to represent various features like roads, railways, river
-              centerlines, powerlines, and administrative borders. [1]
-
-    • Relations: [4]
-            • Are groups of nodes and/or ways, used to represent complex features
-              like routes, areas, or relationships between map elements. [4]
-
-    [1] https://algo.win.tue.nl/tutorials/openstreetmap/
-    [2] https://docs.geodesk.com/intro-to-osm
-    [3] https://wiki.openstreetmap.org/wiki/Elements
-    [4] https://racum.blog/articles/osm-to-geojson/
-    [5] https://wiki.openstreetmap.org/wiki/Way
-
-    Tags are key-value pairs that describe the features in the map. They
-    are used to store information about the features, such as their name,
-    type, or other properties. Note that in the following tables, some
-    tags have their own columns, but all other tags are stored in the tags
-    column as a hstore type.
-
-    List of tables:
-    | Name               |
-    |--------------------|
-    | planet_osm_line    |
-    | planet_osm_point   |
-    | planet_osm_polygon |
-    | planet_osm_rels    |
-    | planet_osm_roads   |
-    | planet_osm_ways    |
-    | spatial_ref_sys    |
-
-    Table "public.planet_osm_line":
-    | Column             | Type                      |
-    |--------------------+---------------------------|
-    | osm_id             | bigint                    |
-    | access             | text                      |
-    | addr:housename     | text                      |
-    | addr:housenumber   | text                      |
-    | addr:interpolation | text                      |
-    | admin_level        | text                      |
-    | aerialway          | text                      |
-    | aeroway            | text                      |
-    | amenity            | text                      |
-    | area               | text                      |
-    | barrier            | text                      |
-    | bicycle            | text                      |
-    | brand              | text                      |
-    | bridge             | text                      |
-    | boundary           | text                      |
-    | building           | text                      |
-    | construction       | text                      |
-    | covered            | text                      |
-    | culvert            | text                      |
-    | cutting            | text                      |
-    | denomination       | text                      |
-    | disused            | text                      |
-    | embankment         | text                      |
-    | foot               | text                      |
-    | generator:source   | text                      |
-    | harbour            | text                      |
-    | highway            | text                      |
-    | historic           | text                      |
-    | horse              | text                      |
-    | intermittent       | text                      |
-    | junction           | text                      |
-    | landuse            | text                      |
-    | layer              | text                      |
-    | leisure            | text                      |
-    | lock               | text                      |
-    | man_made           | text                      |
-    | military           | text                      |
-    | motorcar           | text                      |
-    | name               | text                      |
-    | natural            | text                      |
-    | office             | text                      |
-    | oneway             | text                      |
-    | operator           | text                      |
-    | place              | text                      |
-    | population         | text                      |
-    | power              | text                      |
-    | power_source       | text                      |
-    | public_transport   | text                      |
-    | railway            | text                      |
-    | ref                | text                      |
-    | religion           | text                      |
-    | route              | text                      |
-    | service            | text                      |
-    | shop               | text                      |
-    | sport              | text                      |
-    | surface            | text                      |
-    | toll               | text                      |
-    | tourism            | text                      |
-    | tower:type         | text                      |
-    | tracktype          | text                      |
-    | tunnel             | text                      |
-    | water              | text                      |
-    | waterway           | text                      |
-    | wetland            | text                      |
-    | width              | text                      |
-    | wood               | text                      |
-    | z_order            | integer                   |
-    | way_area           | real                      |
-    | tags               | hstore                    |
-    | way                | geometry(LineString,4326) |
-    Indexes:
-        "planet_osm_line_osm_id_idx" btree (osm_id)
-        "planet_osm_line_tags_idx" gin (tags)
-        "planet_osm_line_way_geog_idx" gist (geography(way))
-
-    Table "public.planet_osm_point":
-    | Column             | Type                 |
-    |--------------------+----------------------|
-    | osm_id             | bigint               |
-    | access             | text                 |
-    | addr:housename     | text                 |
-    | addr:housenumber   | text                 |
-    | addr:interpolation | text                 |
-    | admin_level        | text                 |
-    | aerialway          | text                 |
-    | aeroway            | text                 |
-    | amenity            | text                 |
-    | area               | text                 |
-    | barrier            | text                 |
-    | bicycle            | text                 |
-    | brand              | text                 |
-    | bridge             | text                 |
-    | boundary           | text                 |
-    | building           | text                 |
-    | capital            | text                 |
-    | construction       | text                 |
-    | covered            | text                 |
-    | culvert            | text                 |
-    | cutting            | text                 |
-    | denomination       | text                 |
-    | disused            | text                 |
-    | ele                | text                 |
-    | embankment         | text                 |
-    | foot               | text                 |
-    | generator:source   | text                 |
-    | harbour            | text                 |
-    | highway            | text                 |
-    | historic           | text                 |
-    | horse              | text                 |
-    | intermittent       | text                 |
-    | junction           | text                 |
-    | landuse            | text                 |
-    | layer              | text                 |
-    | leisure            | text                 |
-    | lock               | text                 |
-    | man_made           | text                 |
-    | military           | text                 |
-    | motorcar           | text                 |
-    | name               | text                 |
-    | natural            | text                 |
-    | office             | text                 |
-    | oneway             | text                 |
-    | operator           | text                 |
-    | place              | text                 |
-    | population         | text                 |
-    | power              | text                 |
-    | power_source       | text                 |
-    | public_transport   | text                 |
-    | railway            | text                 |
-    | ref                | text                 |
-    | religion           | text                 |
-    | route              | text                 |
-    | service            | text                 |
-    | shop               | text                 |
-    | sport              | text                 |
-    | surface            | text                 |
-    | toll               | text                 |
-    | tourism            | text                 |
-    | tower:type         | text                 |
-    | tunnel             | text                 |
-    | water              | text                 |
-    | waterway           | text                 |
-    | wetland            | text                 |
-    | width              | text                 |
-    | wood               | text                 |
-    | z_order            | integer              |
-    | tags               | hstore               |
-    | way                | geometry(Point,4326) |
-    Indexes:
-        "planet_osm_point_osm_id_idx" btree (osm_id)
-        "planet_osm_point_tags_idx" gin (tags)
-        "planet_osm_point_way_geog_idx" gist (geography(way))
-
-    Table "public.planet_osm_polygon":
-    | Column             | Type                    |
-    |--------------------+-------------------------|
-    | osm_id             | bigint                  |
-    | access             | text                    |
-    | addr:housename     | text                    |
-    | addr:housenumber   | text                    |
-    | addr:interpolation | text                    |
-    | admin_level        | text                    |
-    | aerialway          | text                    |
-    | aeroway            | text                    |
-    | amenity            | text                    |
-    | area               | text                    |
-    | barrier            | text                    |
-    | bicycle            | text                    |
-    | brand              | text                    |
-    | bridge             | text                    |
-    | boundary           | text                    |
-    | building           | text                    |
-    | construction       | text                    |
-    | covered            | text                    |
-    | culvert            | text                    |
-    | cutting            | text                    |
-    | denomination       | text                    |
-    | disused            | text                    |
-    | embankment         | text                    |
-    | foot               | text                    |
-    | generator:source   | text                    |
-    | harbour            | text                    |
-    | highway            | text                    |
-    | historic           | text                    |
-    | horse              | text                    |
-    | intermittent       | text                    |
-    | junction           | text                    |
-    | landuse            | text                    |
-    | layer              | text                    |
-    | leisure            | text                    |
-    | lock               | text                    |
-    | man_made           | text                    |
-    | military           | text                    |
-    | motorcar           | text                    |
-    | name               | text                    |
-    | natural            | text                    |
-    | office             | text                    |
-    | oneway             | text                    |
-    | operator           | text                    |
-    | place              | text                    |
-    | population         | text                    |
-    | power              | text                    |
-    | power_source       | text                    |
-    | public_transport   | text                    |
-    | railway            | text                    |
-    | ref                | text                    |
-    | religion           | text                    |
-    | route              | text                    |
-    | service            | text                    |
-    | shop               | text                    |
-    | sport              | text                    |
-    | surface            | text                    |
-    | toll               | text                    |
-    | tourism            | text                    |
-    | tower:type         | text                    |
-    | tracktype          | text                    |
-    | tunnel             | text                    |
-    | water              | text                    |
-    | waterway           | text                    |
-    | wetland            | text                    |
-    | width              | text                    |
-    | wood               | text                    |
-    | z_order            | integer                 |
-    | way_area           | real                    |
-    | tags               | hstore                  |
-    | way                | geometry(Geometry,4326) |
-    Indexes:
-        "planet_osm_polygon_osm_id_idx" btree (osm_id)
-        "planet_osm_polygon_tags_idx" gin (tags)
-        "planet_osm_polygon_way_geog_idx" gist (geography(way))
-
-    Table "public.planet_osm_rels":
-    | Column  | Type     |
-    |---------+----------|
-    | id      | bigint   |
-    | way_off | smallint |
-    | rel_off | smallint |
-    | parts   | bigint[] |
-    | members | text[]   |
-    | tags    | text[]   |
-    Indexes:
-        "planet_osm_rels_pkey" PRIMARY KEY, btree (id)
-        "planet_osm_rels_parts_idx" gin (parts) WITH (fastupdate=off)
+    Execute a SQL query against the OpenStreetMap PostgreSQL database.
+    
+    The query must be a valid SQL query that can be executed against the OpenStreetMap
+    database schema. For security reasons, only read-only queries are allowed.
+    
+    Examples:
+    - `SELECT * FROM planet_osm_point LIMIT 10`
+    - `SELECT name, amenity FROM planet_osm_point WHERE amenity = 'restaurant' LIMIT 10`
     """
+    # Check if database connection is available
+    if not ctx.lifespan_context or not ctx.lifespan_context.db_conn:
+        return "Database connection is not available. Please check your PostgreSQL server."
+    
     enforce_read_only = True
     max_rows = 100
 
-    # Check if query is read-only if enforcement is enabled
     if enforce_read_only and not is_read_only_query(query):
-        return "Error: Only read-only queries (SELECT, EXPLAIN, etc.) are allowed. Please modify your query."
+        return "Error: Only read-only queries are allowed for security reasons."
 
     try:
-        results, total_rows = await db.execute_query(query, max_rows=max_rows)
+        results, total_rows = await ctx.lifespan_context.db_conn.execute_query(query, max_rows=max_rows)
 
         if not results:
             return "Query executed successfully, but returned no results."
 
-        # Format results as text
-        result_str = json.dumps(results, indent=2, default=str)
+        # Format results as a table
+        columns = list(results[0].keys())
+        rows = [[str(row.get(col, "")) for col in columns] for row in results]
 
-        # Add information about truncated results
-        if total_rows > len(results):
-            result_str += f"\n\nNote: Showing {len(results)} of {total_rows} total rows. Use LIMIT in your query for more control."
+        # Calculate column widths
+        col_widths = [max(len(col), max([len(row[i]) for row in rows] + [0])) for i, col in enumerate(columns)]
 
-        return result_str
+        # Format header
+        header = " | ".join(col.ljust(col_widths[i]) for i, col in enumerate(columns))
+        separator = "-+-".join("-" * width for width in col_widths)
+
+        # Format rows
+        formatted_rows = [
+            " | ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(row)) for row in rows
+        ]
+
+        # Combine all parts
+        table = f"{header}\n{separator}\n" + "\n".join(formatted_rows)
+
+        # Add summary
+        if total_rows > max_rows:
+            table += f"\n\n(Showing {len(results)} of {total_rows} rows)"
+
+        return table
     except Exception as e:
         return f"Error executing query: {str(e)}"
 
@@ -608,13 +301,26 @@ async def get_schema_info(ctx: Context) -> str:
     """
     Get information about the OSM database schema
     """
-    tables = await db.get_tables()
+    # Check if database connection is available
+    if not ctx.lifespan_context or not ctx.lifespan_context.db_conn:
+        return "Database connection is not available. Please check your PostgreSQL server."
+    
+    db_conn = ctx.lifespan_context.db_conn
+    tables = await db_conn.get_tables()
 
-    schema_info = [OSM_DESCRIPTION, "\nDatabase Tables:\n"]
+    schema_info = [
+        "# OpenStreetMap Database Schema\n",
+        "OpenStreetMap (OSM) Data Structure:\n",
+        "In OpenStreetMap, data is structured using:\n",
+        "1. Nodes: Points with coordinates (shops, landmarks, etc.)\n",
+        "2. Ways: Lines or polygons defined by ordered lists of nodes (roads, buildings, etc.)\n",
+        "3. Relations: Groups of nodes and ways (complex features like routes)\n",
+        "\nDatabase Tables:\n"
+    ]
 
     for table in tables:
         if table.startswith("planet_osm_"):
-            table_info = await db.get_table_info(table)
+            table_info = await db_conn.get_table_info(table)
 
             schema_info.append(f"\n## {table}")
             schema_info.append(
