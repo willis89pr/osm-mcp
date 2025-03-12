@@ -15,12 +15,17 @@ def demo_map_controls():
     print("This demo will show various map features after you open the page.")
     time.sleep(5)  # Give some time for the browser to connect
     
-    # Example 1: Set the map view
+    # Example 1: Set the map title
+    print("\nSetting map title...")
+    server.set_title("San Francisco Landmarks", {"color": "#0066cc"})
+    time.sleep(2)
+    
+    # Example 2: Set the map view
     print("\nSetting map view to San Francisco...")
     server.set_view(center=[37.7749, -122.4194], zoom=12)
     time.sleep(3)
     
-    # Example 2: Show a marker
+    # Example 3: Show a marker
     print("\nAdding a marker at Coit Tower...")
     server.show_marker(
         coordinates=[37.8024, -122.4058],
@@ -29,7 +34,7 @@ def demo_map_controls():
     )
     time.sleep(3)
     
-    # Example 3: Show a polygon around Golden Gate Park
+    # Example 4: Show a polygon around Golden Gate Park
     print("\nAdding a polygon around Golden Gate Park...")
     golden_gate_park = [
         [37.7694, -122.5110],
@@ -43,7 +48,13 @@ def demo_map_controls():
     )
     time.sleep(3)
     
-    # Example 4: Get the current view
+    # Update the title with additional information
+    print("\nUpdating map title with additional information...")
+    server.set_title("San Francisco Landmarks - Golden Gate Park Area", 
+                    {"color": "#006600", "backgroundColor": "rgba(255, 255, 255, 0.9)"})
+    time.sleep(2)
+    
+    # Example 5: Get the current view
     print("\nCurrent map view:")
     current_view = server.get_current_view()
     print(f"  Center: {current_view['center']}")

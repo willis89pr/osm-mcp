@@ -173,6 +173,20 @@ class FlaskServer:
         """
         return self.current_view
 
+    def set_title(self, title, options=None):
+        """
+        Set the map title displayed at the bottom right of the map
+        
+        Args:
+            title (str): Title text to display
+            options (dict, optional): Styling options like fontSize, color, etc.
+        """
+        data = {
+            "title": title,
+            "options": options or {}
+        }
+        self.send_map_command("SET_TITLE", data)
+
 # For testing the Flask server directly
 if __name__ == "__main__":
     server = FlaskServer()

@@ -27,10 +27,25 @@
             border-radius: 5px;
             box-shadow: 0 0 15px rgba(0,0,0,0.2);
         }
+        .map-title {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            padding: 10px 15px;
+            background-color: rgba(255, 255, 255, 0.8);
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+            z-index: 1000;
+            font-size: 24px;
+            font-weight: bold;
+            max-width: 50%;
+            text-align: right;
+        }
     </style>
 </head>
 <body>
     <div id="map"></div>
+    <div id="mapTitle" class="map-title" style="display:none;"></div>
     
     <!-- Leaflet JavaScript -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -153,6 +168,10 @@
                     setView(message.data);
                     break;
                 
+                case 'SET_TITLE':
+                    setTitle(message.data.title, message.data.options);
+                    break;
+                
                 case 'ping':
                     // Just a keepalive, do nothing
                     break;
@@ -221,6 +240,33 @@
                 map.panTo(viewOptions.center);
             } else if (viewOptions.zoom) {
                 map.setZoom(viewOptions.zoom);
+            }
+        }
+        
+        // Function to set the map title
+        function setTitle(title, options = {}) {
+            const titleElement = document.getElementById('mapTitle');
+            
+            if (!title) {
+                titleElement.style.display = 'none';
+                return;
+            }
+            
+            // Set title text
+            titleElement.textContent = title;
+            titleElement.style.display = 'block';
+            
+            // Apply custom styling if provided
+            if (options.fontSize) {
+                titleElement.style.fontSize = options.fontSize;
+            }
+            
+            if (options.color) {
+                titleElement.style.color = options.color;
+            }
+            
+            if (options.backgroundColor) {
+                titleElement.style.backgroundColor = options.backgroundColor;
             }
         }
         
