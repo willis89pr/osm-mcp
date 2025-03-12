@@ -1,51 +1,87 @@
-# MCP OpenStreetMap Server
+# MCP-OSM: OpenStreetMap Integration for MCP
 
-This project provides an MCP (Machine Conversation Protocol) server for interacting with OpenStreetMap data stored in a PostgreSQL database. It also includes a Flask web server that serves a Leaflet map with OpenStreetMap tiles.
+This package provides OpenStreetMap integration for MCP, allowing users to visualize map data and interact with it through an MCP interface.
 
 ## Features
 
-- MCP server for querying OpenStreetMap data
-- Flask web server with Leaflet map integration
-- OpenStreetMap tile display
+- Web-based map viewer using Leaflet.js and OpenStreetMap
+- Server-to-client communication via Server-Sent Events (SSE)
+- MCP tools for map control (adding markers, polygons, setting view)
+- PostgreSQL/PostGIS query interface for OpenStreetMap data
 
-## Setup
+## Installation
 
-1. Install dependencies:
-   ```
-   uv add flask
-   ```
+```bash
+pip install -e .
+```
 
-2. Set environment variables (optional):
-   ```
-   export POSTGRES_HOST=localhost
-   export POSTGRES_PORT=5432
-   export POSTGRES_DB=osm
-   export POSTGRES_USER=postgres
-   export POSTGRES_PASSWORD=postgres
-   export FLASK_HOST=127.0.0.1
-   export FLASK_PORT=5000
-   ```
+## Usage
 
-3. Run the server:
-   ```
-   python osm_mcp_server.py
-   ```
+### Running the Server
 
-4. Access the map at http://127.0.0.1:5000
+You can run the server using the provided run script:
+
+```bash
+./run.py
+```
+
+Or as a Python module:
+
+```bash
+python -m mcp_osm
+```
+
+This will start both the MCP server and a Flask web server. The web interface will be available at http://127.0.0.1:5000 by default.
+
+### Environment Variables
+
+The following environment variables can be used to configure the servers:
+
+- `FLASK_HOST` - Host for the Flask server (default: 127.0.0.1)
+- `FLASK_PORT` - Port for the Flask server (default: 5000)
+- `PGHOST` - PostgreSQL host (default: localhost)
+- `PGPORT` - PostgreSQL port (default: 5432)
+- `PGDB` - PostgreSQL database name (default: osm)
+- `PGUSER` - PostgreSQL username (default: postgres)
+- `PGPASSWORD` - PostgreSQL password (default: postgres)
+
+### MCP Tools
+
+The following MCP tools are available:
+
+- `set_map_view` - Set the map view to specific coordinates or bounds
+- `set_map_title` - Set the title displayed at the bottom right of the map
+- `add_map_marker` - Add a marker at specific coordinates
+- `add_map_polygon` - Add a polygon defined by a set of coordinates
+- `query_osm_postgres` - Execute a SQL query against the OpenStreetMap database
 
 ## Project Structure
 
-- `osm_mcp_server.py`: Main MCP server implementation
-- `flask_server.py`: Flask server implementation for serving the Leaflet map
-- `templates/index.html`: HTML template with Leaflet map
-- `static/`: Directory for static files (CSS, JS, images)
+```
+mcp-osm/
+├── mcp_osm/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── flask_server.py
+│   └── server.py
+├── templates/
+│   └── index.html
+├── static/
+│   └── ...
+├── setup.py
+├── run.py
+└── README.md
+```
 
-## Environment Variables
+## Development
 
-- `POSTGRES_HOST`: PostgreSQL host (default: localhost)
-- `POSTGRES_PORT`: PostgreSQL port (default: 5432)
-- `POSTGRES_DB`: PostgreSQL database name (default: osm)
-- `POSTGRES_USER`: PostgreSQL username (default: postgres)
-- `POSTGRES_PASSWORD`: PostgreSQL password (default: postgres)
-- `FLASK_HOST`: Flask server host (default: 127.0.0.1)
-- `FLASK_PORT`: Flask server port (default: 5000)
+To set up the development environment:
+
+1. Clone the repository
+2. Install the package in development mode: `pip install -e .`
+3. Make your changes
+4. Run the server: `./run.py`
+
+## License
+
+[MIT License](LICENSE)

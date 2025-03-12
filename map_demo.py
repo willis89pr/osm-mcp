@@ -3,8 +3,14 @@
 Map Control Demo - Shows how to use the Flask server to control the map display
 """
 
+import sys
+import os
 import time
-from flask_server import FlaskServer
+
+# Set up the path to find our package
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from mcp_osm.flask_server import FlaskServer
 
 def demo_map_controls():
     # Initialize and start the Flask server
