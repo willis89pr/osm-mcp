@@ -47,6 +47,15 @@
             maxZoom: 19
         }).addTo(map);
         
+        // Storage for created objects to allow removal/updates
+        const mapObjects = {
+            markers: {},
+            polygons: {}
+        };
+        
+        // Counter for generating unique IDs
+        let objectCounter = 0;
+        
         // Try to get user's location and center the map there
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(
@@ -60,12 +69,163 @@
                         .addTo(map)
                         .bindPopup('Your location')
                         .openPopup();
+                        
+                    // Send initial view to server
+                    sendViewChanged();
                 },
                 (error) => {
                     console.error('Error getting location:', error);
+                    // Send initial view anyway
+                    sendViewChanged();
                 }
             );
+        } else {
+            // Send initial view if geolocation is not available
+            sendViewChanged();
         }
+        
+        // Map event handlers
+        map.on('moveend', sendViewChanged);
+        map.on('zoomend', sendViewChanged);
+        
+        // Function to send view changes to the server
+        function sendViewChanged() {
+            const center = map.getCenter();
+            const bounds = map.getBounds();
+            const zoom = map.getZoom();
+            
+            fetch('/api/viewChanged', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    center: [center.lat, center.lng],
+                    zoom: zoom,
+                    bounds: [
+                        [bounds.getSouth(), bounds.getWest()],
+                        [bounds.getNorth(), bounds.getEast()]
+                    ]
+                })
+            })
+            .catch(error => console.error('Error sending view change:', error));
+        }
+        
+        // SSE connection to receive commands from the server
+        function connectSSE() {
+            const eventSource = new EventSource('/api/sse');
+            
+            eventSource.onopen = function() {
+                console.log('SSE connection established');
+            };
+            
+            eventSource.onerror = function(error) {
+                console.error('SSE connection error:', error);
+                eventSource.close();
+                // Try to reconnect after a delay
+                setTimeout(connectSSE, 5000);
+            };
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const message = JSON.parse(event.data);
+                    handleServerCommand(message);
+                } catch (error) {
+                    console.error('Error processing SSE message:', error);
+                }
+            };
+        }
+        
+        // Handle commands received from the server
+        function handleServerCommand(message) {
+            console.log('Received server command:', message);
+            
+            switch (message.type) {
+                case 'SHOW_POLYGON':
+                    showPolygon(message.data.coordinates, message.data.options);
+                    break;
+                    
+                case 'SHOW_MARKER':
+                    showMarker(message.data.coordinates, message.data.text, message.data.options);
+                    break;
+                    
+                case 'SET_VIEW':
+                    setView(message.data);
+                    break;
+                
+                case 'ping':
+                    // Just a keepalive, do nothing
+                    break;
+                    
+                case 'connected':
+                    console.log('Connected to server with ID:', message.id);
+                    break;
+                    
+                default:
+                    console.warn('Unknown command type:', message.type);
+            }
+        }
+        
+        // Function to show a polygon on the map
+        function showPolygon(coordinates, options = {}) {
+            const id = 'polygon_' + (objectCounter++);
+            
+            // Remove existing polygon with the same ID if it exists
+            if (mapObjects.polygons[id]) {
+                map.removeLayer(mapObjects.polygons[id]);
+            }
+            
+            // Create and add the polygon
+            const polygon = L.polygon(coordinates, options).addTo(map);
+            mapObjects.polygons[id] = polygon;
+            
+            // Fit map to polygon bounds if requested
+            if (options.fitBounds) {
+                map.fitBounds(polygon.getBounds());
+            }
+            
+            return id;
+        }
+        
+        // Function to show a marker on the map
+        function showMarker(coordinates, text = null, options = {}) {
+            const id = 'marker_' + (objectCounter++);
+            
+            // Remove existing marker with the same ID if it exists
+            if (mapObjects.markers[id]) {
+                map.removeLayer(mapObjects.markers[id]);
+            }
+            
+            // Create and add the marker
+            const marker = L.marker(coordinates, options).addTo(map);
+            
+            // Add popup if text is provided
+            if (text) {
+                marker.bindPopup(text);
+                if (options.openPopup) {
+                    marker.openPopup();
+                }
+            }
+            
+            mapObjects.markers[id] = marker;
+            return id;
+        }
+        
+        // Function to set the map view
+        function setView(viewOptions) {
+            if (viewOptions.bounds) {
+                map.fitBounds(viewOptions.bounds);
+            } else if (viewOptions.center && viewOptions.zoom) {
+                map.setView(viewOptions.center, viewOptions.zoom);
+            } else if (viewOptions.center) {
+                map.panTo(viewOptions.center);
+            } else if (viewOptions.zoom) {
+                map.setZoom(viewOptions.zoom);
+            }
+        }
+        
+        // Connect to the SSE endpoint
+        connectSSE();
     </script>
 </body>
 </html> 
