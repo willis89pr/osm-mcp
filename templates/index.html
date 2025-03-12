@@ -65,7 +65,8 @@
         // Storage for created objects to allow removal/updates
         const mapObjects = {
             markers: {},
-            polygons: {}
+            polygons: {},
+            lines: {}
         };
         
         // Counter for generating unique IDs
@@ -162,6 +163,10 @@
                     
                 case 'SHOW_MARKER':
                     showMarker(message.data.coordinates, message.data.text, message.data.options);
+                    break;
+                    
+                case 'SHOW_LINE':
+                    showLine(message.data.coordinates, message.data.options);
                     break;
                     
                 case 'SET_VIEW':
@@ -268,6 +273,27 @@
             if (options.backgroundColor) {
                 titleElement.style.backgroundColor = options.backgroundColor;
             }
+        }
+        
+        // Function to show a line (polyline) on the map
+        function showLine(coordinates, options = {}) {
+            const id = 'line_' + (objectCounter++);
+            
+            // Remove existing line with the same ID if it exists
+            if (mapObjects.lines[id]) {
+                map.removeLayer(mapObjects.lines[id]);
+            }
+            
+            // Create and add the line
+            const line = L.polyline(coordinates, options).addTo(map);
+            mapObjects.lines[id] = line;
+            
+            // Fit map to line bounds if requested
+            if (options.fitBounds) {
+                map.fitBounds(line.getBounds());
+            }
+            
+            return id;
         }
         
         // Connect to the SSE endpoint

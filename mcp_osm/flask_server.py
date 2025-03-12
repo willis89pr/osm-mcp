@@ -207,6 +207,17 @@ class FlaskServer:
         data = {"coordinates": coordinates, "text": text, "options": options or {}}
         self.send_map_command("SHOW_MARKER", data)
 
+    def show_line(self, coordinates, options=None):
+        """
+        Display a line (polyline) on the map
+
+        Args:
+            coordinates (list): List of [lat, lng] coordinates
+            options (dict, optional): Styling options
+        """
+        data = {"coordinates": coordinates, "options": options or {}}
+        self.send_map_command("SHOW_LINE", data)
+
     def set_view(self, bounds=None, center=None, zoom=None):
         """
         Set the map view
