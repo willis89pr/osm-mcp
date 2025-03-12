@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import queue
+import socket
 import sys
 import threading
 import time
@@ -114,20 +115,42 @@ class FlaskServer:
                     self.current_view["bounds"] = data["bounds"]
             return jsonify({"status": "success"})
 
+    def is_port_in_use(self, port):
+        """Check if a port is already in use"""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex((self.host, port)) == 0
+
     def start(self):
         """Start the Flask server in a separate thread"""
-
-        def run_server():
-            # Redirect stdout to stderr while running Flask
-            with redirect_stdout(sys.stderr):
-                self.app.run(
-                    host=self.host, port=self.port, debug=False, use_reloader=False
-                )
-
-        self.server_thread = threading.Thread(target=run_server)
-        self.server_thread.daemon = True  # Thread will exit when main thread exits
-        self.server_thread.start()
-        log(f"Flask server started at http://{self.host}:{self.port}")
+        # Try up to 10 ports, starting with self.port
+        original_port = self.port
+        max_attempts = 10
+        
+        for attempt in range(max_attempts):
+            if self.is_port_in_use(self.port):
+                log(f"Port {self.port} is already in use, trying port {self.port + 1}")
+                self.port += 1
+                if attempt == max_attempts - 1:
+                    log(f"Failed to find an available port after {max_attempts} attempts")
+                    # Reset port to original value
+                    self.port = original_port
+                    return False
+            else:
+                # Port is available, start the server
+                def run_server():
+                    # Redirect stdout to stderr while running Flask
+                    with redirect_stdout(sys.stderr):
+                        self.app.run(
+                            host=self.host, port=self.port, debug=False, use_reloader=False
+                        )
+                
+                self.server_thread = threading.Thread(target=run_server)
+                self.server_thread.daemon = True  # Thread will exit when main thread exits
+                self.server_thread.start()
+                log(f"Flask server started at http://{self.host}:{self.port}")
+                return True
+        
+        return False
 
     def stop(self):
         """Stop the Flask server"""
