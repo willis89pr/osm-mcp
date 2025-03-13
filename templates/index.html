@@ -72,26 +72,8 @@
         // Counter for generating unique IDs
         let objectCounter = 0;
         
-        // Try to get user's location and center the map there
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const lat = position.coords.latitude;
-                    const lng = position.coords.longitude;
-                    map.setView([lat, lng], 13);                    
-                    // Send initial view to server
-                    sendViewChanged();
-                },
-                (error) => {
-                    console.error('Error getting location:', error);
-                    // Send initial view anyway
-                    sendViewChanged();
-                }
-            );
-        } else {
-            // Send initial view if geolocation is not available
-            sendViewChanged();
-        }
+        // Send initial view to server
+        sendViewChanged();
         
         // Map event handlers
         map.on('moveend', sendViewChanged);
