@@ -21,9 +21,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-
-def log(msg):
-    print(msg, file=sys.stderr)
+# Create a logger for this module
+logger = logging.getLogger(__name__)
 
 
 # Custom database connection class
@@ -35,25 +34,25 @@ class PostgresConnection:
         self, query: str, params: Optional[Dict[str, Any]] = None, max_rows: int = 1000
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Execute a query and return results as a list of dictionaries with total count."""
-        log(f"Executing query: {query}, params: {params}")
+        logger.info(f"Executing query: {query}, params: {params}")
         start_time = time.time()
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
-                # Set statement timeout to 10 seconds
-                cur.execute("SET statement_timeout = 10000")
+                # Set statement timeout to 20 seconds
+                cur.execute("SET statement_timeout = 20000")
 
                 if params:
                     cur.execute(query, params)
                 else:
                     cur.execute(query)
                 end_time = time.time()
-                log(f"Query execution time: {end_time - start_time} seconds")
+                logger.info(f"Query execution time: {end_time - start_time} seconds")
                 total_rows = cur.rowcount
                 results = cur.fetchmany(max_rows)
-                log(f"Got {total_rows} rows")
+                logger.info(f"Got {total_rows} rows")
                 # Log first 3 rows.
                 for row in results[:3]:
-                    log(f"Row: {row}")
+                    logger.info(f"Row: {row}")
                 return results, total_rows
             except psycopg2.errors.QueryCanceled:
                 self.conn.rollback()
@@ -124,7 +123,7 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     try:
         # Initialize database connection (optional)
         try:
-            log("Connecting to database...")
+            logger.info("Connecting to database...")
             conn = psycopg2.connect(
                 host=os.environ.get("PGHOST", "localhost"),
                 port=os.environ.get("PGPORT", "5432"),
@@ -133,30 +132,30 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
                 password=os.environ.get("PGPASSWORD", "postgres"),
             )
             app_ctx.db_conn = PostgresConnection(conn)
-            log("Database connection established")
+            logger.info("Database connection established")
         except Exception as e:
-            log(f"Warning: Could not connect to database: {e}")
-            log("Continuing without database connection")
+            logger.warning(f"Warning: Could not connect to database: {e}")
+            logger.warning("Continuing without database connection")
         
         # Initialize and start Flask server
-        log("Starting Flask server...")
+        logger.info("Starting Flask server...")
         flask_server = FlaskServer(
             host=os.environ.get("FLASK_HOST", "127.0.0.1"),
             port=int(os.environ.get("FLASK_PORT","8888"))
         )
         flask_server.start()
         app_ctx.flask_server = flask_server
-        log(f"Flask server started at http://{flask_server.host}:{flask_server.port}")
+        logger.info(f"Flask server started at http://{flask_server.host}:{flask_server.port}")
         
         yield app_ctx
     finally:
         # Cleanup on shutdown
         if app_ctx.flask_server:
-            log("Stopping Flask server...")
+            logger.info("Stopping Flask server...")
             app_ctx.flask_server.stop()
         
         if app_ctx.db_conn and app_ctx.db_conn.conn:
-            log("Closing database connection...")
+            logger.info("Closing database connection...")
             app_ctx.db_conn.conn.close()
 
 

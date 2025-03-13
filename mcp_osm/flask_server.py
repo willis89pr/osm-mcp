@@ -31,36 +31,34 @@ from flask import (
 # Redirect all logging to stderr.
 logging.basicConfig(stream=sys.stderr)
 
-def log(msg):
-    sys.stdout.flush()
-    sys.stderr.write(f"{msg}\n")
+# Create a logger for this module
+logger = logging.getLogger(__name__)
 
 
 class FlaskServer:
     def __init__(self, host="127.0.0.1", port=5000):
-        # Capture and redirect Flask's initialization output to stderr
-        with redirect_stdout(sys.stderr):
-            self.app = Flask(
-                __name__,
-                template_folder=os.path.join(
-                    os.path.dirname(os.path.dirname(__file__)), "templates"
-                ),
-                static_folder=os.path.join(
-                    os.path.dirname(os.path.dirname(__file__)), "static"
-                ),
-            )
-            # Disable default Flask logging output
-            self.app.logger.disabled = True
-            # Add handlers to redirect any remaining logs to stderr
-            for handler in self.app.logger.handlers:
-                handler.setStream(sys.stderr)
-                
         self.host = host
         self.port = port
+        self.app = Flask(__name__, 
+                         template_folder=os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates"),
+                         static_folder=os.path.join(os.path.dirname(os.path.dirname(__file__)), "static"))
+        
+        # Capture and redirect Flask's initialization output to stderr
+        with io.StringIO() as buf, redirect_stdout(buf):
+            self.setup_routes()
+            output = buf.getvalue()
+            if output:
+                logger.info(output.strip())
+        
         self.server_thread = None
-        self.current_view = {"center": [0, 0], "zoom": 2, "bounds": None}
+        self.clients = {}  # Maps client_id to message queue
+        self.client_counter = 0
+        self.current_view = {
+            "center": [0, 0],
+            "zoom": 2,
+            "bounds": [[-85, -180], [85, 180]]
+        }
         self.sse_clients = {}  # Changed from list to dict to store queues
-        self.setup_routes()
 
     def setup_routes(self):
         @self.app.route("/")
@@ -95,7 +93,7 @@ class FlaskServer:
                     # Client disconnected
                     if client_id in self.sse_clients:
                         del self.sse_clients[client_id]
-                    log(
+                    logger.info(
                         f"Client {client_id} disconnected, {len(self.sse_clients)} clients remaining"
                     )
 
@@ -128,10 +126,10 @@ class FlaskServer:
         
         for attempt in range(max_attempts):
             if self.is_port_in_use(self.port):
-                log(f"Port {self.port} is already in use, trying port {self.port + 1}")
+                logger.info(f"Port {self.port} is already in use, trying port {self.port + 1}")
                 self.port += 1
                 if attempt == max_attempts - 1:
-                    log(f"Failed to find an available port after {max_attempts} attempts")
+                    logger.error(f"Failed to find an available port after {max_attempts} attempts")
                     # Reset port to original value
                     self.port = original_port
                     return False
@@ -147,7 +145,7 @@ class FlaskServer:
                 self.server_thread = threading.Thread(target=run_server)
                 self.server_thread.daemon = True  # Thread will exit when main thread exits
                 self.server_thread.start()
-                log(f"Flask server started at http://{self.host}:{self.port}")
+                logger.info(f"Flask server started at http://{self.host}:{self.port}")
                 return True
         
         return False
@@ -157,7 +155,7 @@ class FlaskServer:
         # Flask doesn't provide a clean way to stop the server from outside
         # In a production environment, you would use a more robust server like gunicorn
         # For this example, we'll rely on the daemon thread to exit when the main thread exits
-        log("Flask server stopping...")
+        logger.info("Flask server stopping...")
 
     # Map control methods
     def send_map_command(self, command_type, data):
@@ -174,15 +172,15 @@ class FlaskServer:
         # Send the message to all connected clients
         clients_count = len(self.sse_clients)
         if clients_count == 0:
-            log("No connected clients to send message to")
+            logger.info("No connected clients to send message to")
             return
 
-        log(f"Sending {command_type} to {clients_count} clients")
+        logger.info(f"Sending {command_type} to {clients_count} clients")
         for client_id, client_queue in list(self.sse_clients.items()):
             try:
                 client_queue.put(message)
             except Exception as e:
-                log(f"Error sending to client {client_id}: {e}")
+                logger.error(f"Error sending to client {client_id}: {e}")
 
     def show_polygon(self, coordinates, options=None):
         """
@@ -265,11 +263,11 @@ if __name__ == "__main__":
 
     # Keep the main thread running
     try:
-        log("Press Ctrl+C to stop the server")
+        logger.info("Press Ctrl+C to stop the server")
         import time
 
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         server.stop()
-        log("Server stopped")
+        logger.info("Server stopped")
