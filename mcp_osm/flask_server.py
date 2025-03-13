@@ -61,6 +61,10 @@ class FlaskServer:
         }
         self.sse_clients = {}  # Changed from list to dict to store queues
         self.latest_screenshot = None  # Store the latest screenshot
+        
+        # Add storage for geolocate requests and responses
+        self.geolocate_requests = {}
+        self.geolocate_responses = {}
 
     def setup_routes(self):
         @self.app.route("/")
@@ -123,6 +127,20 @@ class FlaskServer:
                 self.latest_screenshot = data["image"]
                 return jsonify({"status": "success"})
             return jsonify({"status": "error", "message": "No image data provided"}), 400
+            
+        @self.app.route("/api/geolocateResponse", methods=["POST"])
+        def geolocate_response():
+            data = request.json
+            if data and "requestId" in data and "results" in data:
+                request_id = data["requestId"]
+                results = data["results"]
+                
+                # Store the response
+                self.geolocate_responses[request_id] = results
+                logger.info(f"Received geolocate response for request {request_id} with {len(results)} results")
+                
+                return jsonify({"status": "success"})
+            return jsonify({"status": "error", "message": "Invalid geolocate response data"}), 400
 
     def is_port_in_use(self, port):
         """Check if a port is already in use"""
@@ -288,6 +306,36 @@ class FlaskServer:
             time.sleep(0.1)
         
         logger.warning("Screenshot capture timed out")
+        return None
+        
+    def geolocate(self, query):
+        """
+        Send a geolocate request to the web client and wait for the response
+        
+        Args:
+            query (str): The location name to search for
+            
+        Returns:
+            list: Nominatim search results or None if the request times out
+        """
+        # Generate a unique request ID
+        request_id = str(int(time.time() * 1000))
+        
+        # Send the geolocate command to the web client
+        data = {"requestId": request_id, "query": query}
+        self.send_map_command("GEOLOCATE", data)
+        
+        # Wait for the response (with timeout)
+        start_time = time.time()
+        timeout = 10  # seconds
+        
+        while time.time() - start_time < timeout:
+            if request_id in self.geolocate_responses:
+                results = self.geolocate_responses.pop(request_id)
+                return results
+            time.sleep(0.1)
+        
+        logger.warning(f"Geolocate request for '{query}' timed out")
         return None
 
 

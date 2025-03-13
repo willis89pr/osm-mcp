@@ -266,6 +266,51 @@
             });
         }
         
+        // Function to perform a geolocate search and send results back to server
+        function performGeolocateSearch(requestId, query) {
+            console.log(`Performing geolocate search for "${query}" (request ID: ${requestId})`);
+            
+            // Nominatim API URL
+            const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=10`;
+            
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    // Send the results back to the server
+                    fetch('/api/geolocateResponse', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            requestId: requestId,
+                            results: data
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('Geolocate response sent to server:', data);
+                    })
+                    .catch(error => {
+                        console.error('Error sending geolocate response:', error);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error performing geolocate search:', error);
+                    // Send empty results in case of error
+                    fetch('/api/geolocateResponse', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            requestId: requestId,
+                            results: []
+                        })
+                    });
+                });
+        }
+        
         // SSE connection to receive commands from the server
         function connectSSE() {
             const eventSource = new EventSource('/api/sse');
@@ -318,6 +363,10 @@
                 
                 case 'CAPTURE_SCREENSHOT':
                     captureMapScreenshot();
+                    break;
+                
+                case 'GEOLOCATE':
+                    performGeolocateSearch(message.data.requestId, message.data.query);
                     break;
                 
                 case 'ping':

@@ -986,6 +986,41 @@ async def get_map_screenshot(ctx: Context) -> str:
     # Return as markdown image
     return f"![Map Screenshot]({image_data})"
 
+@mcp.tool()
+async def geolocate(ctx: Context, name: str) -> str:
+    """
+    Look up a location by name using the Nominatim geocoding service.
+    This is the preferred way to look up a feature by name.
+    
+    Args:
+        name: The name of the location to search for
+        
+    Returns:
+        JSON string containing the Nominatim search results
+        
+    Examples:
+        - Find a city: `geolocate("San Francisco")`
+        - Find a landmark: `geolocate("Eiffel Tower")`
+        - Find a country: `geolocate("New Zealand")`
+    """
+    if not ctx.request_context.lifespan_context.flask_server:
+        return "Map server is not available."
+    
+    # Get the Flask server instance
+    server = ctx.request_context.lifespan_context.flask_server
+    
+    # Send the geolocate request to the web client via the Flask server
+    results = server.geolocate(name)
+    
+    if results is None:
+        return "Geolocate request timed out or failed. Make sure the map is visible in a browser."
+    
+    if not results:
+        return f"No results found for '{name}'."
+    
+    # Format the results as JSON
+    return json.dumps(results, indent=2)
+
 def run_server():
     """Run the MCP server"""
     mcp.run()
