@@ -10,6 +10,9 @@
           integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
           crossorigin=""/>
     
+    <!-- html2canvas for screenshot functionality -->
+    <script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
+    
     <style>
         body, html {
             margin: 0;
@@ -102,6 +105,35 @@
             .catch(error => console.error('Error sending view change:', error));
         }
         
+        // Function to capture and send a screenshot of the map
+        function captureMapScreenshot() {
+            console.log('Capturing map screenshot...');
+            
+            // Use html2canvas to capture the map element
+            html2canvas(document.getElementById('map')).then(canvas => {
+                // Convert canvas to base64 image data
+                const imageData = canvas.toDataURL('image/png');
+                
+                // Send the image data to the server
+                fetch('/api/screenshot', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        image: imageData
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Screenshot sent to server:', data);
+                })
+                .catch(error => {
+                    console.error('Error sending screenshot:', error);
+                });
+            });
+        }
+        
         // SSE connection to receive commands from the server
         function connectSSE() {
             const eventSource = new EventSource('/api/sse');
@@ -150,6 +182,10 @@
                 
                 case 'SET_TITLE':
                     setTitle(message.data.title, message.data.options);
+                    break;
+                
+                case 'CAPTURE_SCREENSHOT':
+                    captureMapScreenshot();
                     break;
                 
                 case 'ping':

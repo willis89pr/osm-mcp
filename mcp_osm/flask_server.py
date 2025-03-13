@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import io
+import base64
 from contextlib import redirect_stdout
 
 from unittest import mock
@@ -59,6 +60,7 @@ class FlaskServer:
             "bounds": [[-85, -180], [85, 180]]
         }
         self.sse_clients = {}  # Changed from list to dict to store queues
+        self.latest_screenshot = None  # Store the latest screenshot
 
     def setup_routes(self):
         @self.app.route("/")
@@ -112,6 +114,15 @@ class FlaskServer:
                 if "bounds" in data:
                     self.current_view["bounds"] = data["bounds"]
             return jsonify({"status": "success"})
+            
+        @self.app.route("/api/screenshot", methods=["POST"])
+        def save_screenshot():
+            data = request.json
+            if data and "image" in data:
+                # Store the base64 image data
+                self.latest_screenshot = data["image"]
+                return jsonify({"status": "success"})
+            return jsonify({"status": "error", "message": "No image data provided"}), 400
 
     def is_port_in_use(self, port):
         """Check if a port is already in use"""
@@ -254,6 +265,30 @@ class FlaskServer:
         """
         data = {"title": title, "options": options or {}}
         self.send_map_command("SET_TITLE", data)
+        
+    def capture_screenshot(self):
+        """
+        Request a screenshot from the map and wait for it to be received
+        
+        Returns:
+            str: Base64-encoded image data, or None if no screenshot is available
+        """
+        # Send command to capture screenshot
+        self.send_map_command("CAPTURE_SCREENSHOT", {})
+        
+        # Wait for the screenshot to be received (with timeout)
+        start_time = time.time()
+        timeout = 5  # seconds
+        
+        while time.time() - start_time < timeout:
+            if self.latest_screenshot:
+                screenshot = self.latest_screenshot
+                self.latest_screenshot = None  # Clear after retrieving
+                return screenshot
+            time.sleep(0.1)
+        
+        logger.warning("Screenshot capture timed out")
+        return None
 
 
 # For testing the Flask server directly

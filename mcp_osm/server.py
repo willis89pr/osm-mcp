@@ -4,6 +4,7 @@ import re
 import sys
 import time
 import json
+import base64
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, AsyncIterator
 from contextlib import asynccontextmanager
@@ -56,7 +57,7 @@ class PostgresConnection:
                 return results, total_rows
             except psycopg2.errors.QueryCanceled:
                 self.conn.rollback()
-                raise TimeoutError("Query execution timed out")
+                raise TimeoutError("Query execution timed out. Did you use a bounding box, and ::geography?")
             except Exception as e:
                 self.conn.rollback()
                 raise e
@@ -950,6 +951,40 @@ async def get_map_view(ctx: Context) -> str:
     }
     
     return json.dumps(response, indent=2)
+
+@mcp.tool()
+async def get_map_screenshot(ctx: Context) -> str:
+    """
+    Capture a screenshot of the current map view and return it as a
+    base64-encoded image.
+    
+    This function requests a screenshot from the map interface and returns it in
+    a format that can be displayed in the conversation. The screenshot shows the
+    exact current state of the map including all markers, polygons, lines, and
+    the current view. Don't use this tool to verify your actions, only use it if
+    the user asks for something like "What's this thing on the map?"
+    
+    Returns:
+        A markdown string with the embedded image
+        
+    Examples:
+        - Capture the current map view: `get_map_screenshot()`
+    """
+    if not ctx.request_context.lifespan_context.flask_server:
+        return "Map server is not available."
+    
+    # Get the Flask server instance
+    server = ctx.request_context.lifespan_context.flask_server
+    
+    # Request a screenshot from the map
+    image_data = server.capture_screenshot()
+    
+    if not image_data:
+        return "Failed to capture map screenshot. Make sure the map is visible in a browser."
+    
+    # The image data already includes the data:image/png;base64, prefix
+    # Return as markdown image
+    return f"![Map Screenshot]({image_data})"
 
 def run_server():
     """Run the MCP server"""
