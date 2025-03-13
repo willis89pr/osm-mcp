@@ -78,14 +78,7 @@
                 (position) => {
                     const lat = position.coords.latitude;
                     const lng = position.coords.longitude;
-                    map.setView([lat, lng], 13);
-                    
-                    // Add a marker at the user's location
-                    L.marker([lat, lng])
-                        .addTo(map)
-                        .bindPopup('Your location')
-                        .openPopup();
-                        
+                    map.setView([lat, lng], 13);                    
                     // Send initial view to server
                     sendViewChanged();
                 },
