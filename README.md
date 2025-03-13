@@ -3,6 +3,8 @@
 This package provides OpenStreetMap integration for MCP, allowing users to query
 and visualize map data through an MCP interface.
 
+[![MCP-OSM Screenshot](osm-mcp-s.webp)](osm-mcp.webp)
+
 ## Features
 
 - Web-based map viewer using Leaflet and OpenStreetMap
