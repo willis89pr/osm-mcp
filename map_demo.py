@@ -54,13 +54,30 @@ def demo_map_controls():
     )
     time.sleep(3)
     
+    # Example 5: Show a line for Market Street
+    print("\nAdding a line along Market Street...")
+    market_street = [
+        [37.7944, -122.3953],  # Ferry Building
+        [37.7932, -122.3967],
+        [37.7909, -122.4013],
+        [37.7891, -122.4051],
+        [37.7865, -122.4113],  # Powell Street
+        [37.7835, -122.4173],
+        [37.7811, -122.4219]   # Civic Center
+    ]
+    server.show_line(
+        coordinates=market_street,
+        options={"color": "red", "weight": 5, "dashArray": "10,15"}
+    )
+    time.sleep(3)
+    
     # Update the title with additional information
     print("\nUpdating map title with additional information...")
     server.set_title("San Francisco Landmarks - Golden Gate Park Area", 
                     {"color": "#006600", "backgroundColor": "rgba(255, 255, 255, 0.9)"})
     time.sleep(2)
     
-    # Example 5: Get the current view
+    # Example 6: Get the current view
     print("\nCurrent map view:")
     current_view = server.get_current_view()
     print(f"  Center: {current_view['center']}")

@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import time
+import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, AsyncIterator
 from contextlib import asynccontextmanager
@@ -38,8 +39,8 @@ class PostgresConnection:
         start_time = time.time()
         with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             try:
-                # Set statement timeout to 5 seconds
-                cur.execute("SET statement_timeout = 5000")
+                # Set statement timeout to 10 seconds
+                cur.execute("SET statement_timeout = 10000")
 
                 if params:
                     cur.execute(query, params)
@@ -233,7 +234,10 @@ async def query_osm_postgres(query: str, ctx: Context) -> str:
     around the world with that name, probably even of the same type
     (e.g. lots of cities named "Los Angeles"). If you know the general
     location, you can use a bounding box to disambiguate. YOU MUST
-    DISAMBIGUATE FEATURES!
+    DISAMBIGUATE FEATURES with bounding boxes!!!!!!!!!!!!
+
+    Even if you have other WHERE clauses, you MUST use a bounding box to
+    disambiguate features. Name and other tags alone are not sufficient.
 
     PostGIS has useful features like ST_Simplify which is especially
     helpful to reduce data to a reasonable size when doing visualizations.
@@ -243,6 +247,8 @@ async def query_osm_postgres(query: str, ctx: Context) -> str:
     feature. Users don't usually care what they are but they can help you
     speed up subsequent queries.
 
+    YOU MUST DISAMBIGUATE FEATURES with bounding boxes!!!!!!!!!!!!
+
     Speaking of speed, there's a TON of data, so queries that don't use
     indexes will be too slow. It's usually best to use postgres and
     postgis functions, and advanced sql when possible. If you need to
@@ -250,6 +256,8 @@ async def query_osm_postgres(query: str, ctx: Context) -> str:
     number of rows you get back to a small number or use aggregation
     functions. Every query will either need to be filtered with WHERE
     clauses or be an aggregation query.
+
+    YOU MUST DISAMBIGUATE FEATURES with bounding boxes!!!!!!!!!!!!
 
     IMPORTANT: All the spatial indexes are on the geography type, not the
     geometry type. This means if you do a spatial query, you need to use
@@ -776,6 +784,9 @@ async def add_map_polygon(
     """
     Add a polygon to the map with the specified coordinates.
     
+    If you're trying to add a polygon with more than 20 points, stop and use
+    ST_Simplify to reduce the number of points.
+
     Args:
         coordinates: List of [latitude, longitude] points defining the polygon
         color: Border color (CSS color value)
@@ -848,6 +859,9 @@ async def add_map_line(
 ) -> str:
     """
     Add a line (polyline) to the map with the specified coordinates.
+
+    If you're trying to add a line with more than 20 points, stop and use
+    ST_Simplify to reduce the number of points.
     
     Args:
         coordinates: List of [latitude, longitude] points defining the line
@@ -909,6 +923,34 @@ async def add_map_line(
     
     return f"Line added with {len(coordinates)} points{style_info}{bounds_info}"
 
+@mcp.tool()
+async def get_map_view(ctx: Context) -> str:
+    """
+    Get the current map view information including center coordinates, zoom
+    level, and bounds. The user can pan and zoom the map at will, at any time,
+    so if you ever need to know the current view, call this tool.
+    
+    Returns:
+        JSON string containing the current map view information
+        
+    Examples:
+        - Get current view: `get_map_view()`
+    """
+    if not ctx.request_context.lifespan_context.flask_server:
+        return "Map server is not available."
+    
+    # Get the current view from the map server
+    server = ctx.request_context.lifespan_context.flask_server
+    view_info = server.get_current_view()
+    
+    # Format the response
+    response = {
+        "center": view_info.get("center"),
+        "zoom": view_info.get("zoom"),
+        "bounds": view_info.get("bounds")
+    }
+    
+    return json.dumps(response, indent=2)
 
 def run_server():
     """Run the MCP server"""
