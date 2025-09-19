@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, AsyncIterator
 from contextlib import asynccontextmanager
 
 import psycopg2
+from psycopg2 import sql
 import psycopg2.extras
 from mcp.server.fastmcp import Context, FastMCP
 
@@ -102,7 +103,7 @@ class PostgresConnection:
         # Get table row count (approximate)
         count_query = f"SELECT count(*) FROM {table_name};"
         with self.conn.cursor() as cur:
-            cur.execute(count_query)
+            count_query = sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table_name))
             row_count = cur.fetchone()[0]
         return {
             "name": table_name,
